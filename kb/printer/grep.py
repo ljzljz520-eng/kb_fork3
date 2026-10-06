@@ -11,10 +11,7 @@ kb printer for grep command module
 :License: GPLv3 (see /LICENSE).
 """
 
-import pathlib
 from typing import List
-from kb.config import DEFAULT_CONFIG as config
-import kb.filesystem as fs
 from kb.printer.style import ALT_BGROUND, BOLD, UND, RESET
 from kb.entities.artifact import Artifact
 
@@ -238,23 +235,18 @@ def print_grep_result_verbose(
         else:
             print(result_line)
 
-# This function still has to be implemented, this is just a placeholder
-
-
 def print_grep_matches(grep_matches, color=True):
     """
     Print text associated to grep matches.
 
     Arguments:
-    grep_matches    - the list of Artifacts to print
-                      in the form of grep matches
-    color           - a boolean, if True, color is enabled
+    grep_matches    - a list of tuples in the form
+                      (display_path, line_number, matched_text)
+    color           - a boolean, if True color is enabled
     """
 
-    for view_id, match in enumerate(grep_matches):
-        path = "/".join(
-            fs.get_filename_parts_wo_prefix(
-                match[0], config["PATH_KB_DATA"]))
+    for match in grep_matches:
+        path = match[0]
         line_number = match[1]
         matched_text = match[2]
 

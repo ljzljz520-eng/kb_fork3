@@ -21,7 +21,6 @@ import kb.db as db
 import kb.initializer as initializer
 import kb.filesystem as fs
 import kb.config as conf
-from kb.entities.artifact import Artifact
 import kb.printer.template as printer
 
 
@@ -84,15 +83,8 @@ def apply_on_set(args: Dict[str, str], config: Dict[str, str]):
         is_strict=is_query_strict)
 
     for artifact in rows:
-        updated_artifact = Artifact(
-            id=artifact.id,
-            title=artifact.title,
-            category=artifact.category,
-            tags=artifact.tags,
-            author=artifact.author,
-            status=artifact.status,
-            template=args["template"])
-        db.update_artifact_by_id(conn, artifact.id, updated_artifact)
+        db.update_artifact_properties(
+            conn, artifact.uuid, template=args["template"])
 
 
 def new(args: Dict[str, str], config: Dict[str, str]):

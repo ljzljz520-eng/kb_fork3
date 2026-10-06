@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 
 
 setup(name='kb-manager',
-      version='0.1.8',
+      version='0.2.0',
       description='A minimalist knowledge base manager',
       keywords='kb',
       author='gnc',

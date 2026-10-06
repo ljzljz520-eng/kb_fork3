@@ -1,118 +1,99 @@
 # -*- encoding: utf-8 -*-
-# kb v0.1.8
+# kb v0.2.0
 # A knowledge base organizer
 # Copyright © 2020, gnc.
 # See /LICENSE for licensing information.
 
 """
-kb edit command module
+kb update command module
+
+Updating the title or the category only changes the *display path
+mapping*: the artifact UUID, its revision chain and its referenced
+blobs are untouched, hence renames and category moves preserve the
+artifact identity. Editing the body instead appends a new revision.
 
 :Copyright: © 2020, gnc.
 :License: GPLv3 (see /LICENSE).
 """
 
 import shlex
+from pathlib import Path
 from subprocess import call
 from typing import Dict
-from pathlib import Path
+
 import kb.db as db
 import kb.initializer as initializer
 import kb.history as history
 import kb.filesystem as fs
-from kb.entities.artifact import Artifact
+import kb.store as store
 
 
 def update(args: Dict[str, str], config: Dict[str, str]):
     """
-    Update artifact properties within the knowledge base of kb.
-
-    Arguments:
-    args:           - a dictionary containing the following fields:
-                      id -> a list of IDs (the ones you see with kb list)
-                        associated to the artifact to update
-                      title -> the title to be assigned to the artifact
-                        to update
-                      category -> the category to be assigned to the
-                        artifact to update
-                      tags -> the tags to be assigned to the artifact
-                        to update
-                      author -> the author to be assigned to the artifact
-                        to update
-                      status -> the status to be assigned to the artifact
-                        to update
-                      template -> the template to be assigned to the artifact
-                        to update
-                      edit_content -> a boolean, if True -> also open the
-                        artifact to edit the content
-    config:         - a configuration dictionary containing at least
-                      the following keys:
-                      PATH_KB_DB        - the database path of KB
-                      PATH_KB_DATA      - the data directory of KB
-                      PATH_KB_HIST      - the history menu path of KB
-                      EDITOR            - the editor program to call
+    Update artifact properties and/or content within kb.
     """
     initializer.init(config)
 
     conn = db.create_connection(config["PATH_KB_DB"])
 
-    # if an ID is specified, load artifact with that ID
-    if args["id"]:
-        old_artifact = history.get_artifact(conn,
-                                            config["PATH_KB_HIST"], args["id"])
-        if not old_artifact:
-            print("The artifact you are trying to update does not exist! "
-                  "Please insert a valid ID...")
-            return None
+    artifact = history.resolve_artifact(conn, args, config, state="alive")
+    if not artifact:
+        print("The artifact you are trying to update does not exist! "
+              "Please insert a valid ID/title...")
+        return
 
-        updated_artifact = Artifact(
-            id=None,
+    # A rename or a category move is just a metadata update: the
+    # UUID, current revision and blob hash never change.
+    metadata_changed = any(
+        args[key] is not None
+        for key in ("title", "category", "tags", "author",
+                    "status", "template"))
+
+    if metadata_changed:
+        updated = db.update_artifact_properties(
+            conn,
+            artifact.uuid,
             title=args["title"],
             category=args["category"],
             tags=args["tags"],
             author=args["author"],
             status=args["status"],
             template=args["template"])
+        if updated is not None:
+            artifact = updated
+            print("Artifact display path is now {path} (uuid unchanged: "
+                  "{uuid})".format(path=artifact.path, uuid=artifact.uuid))
 
-        db.update_artifact_by_id(conn, old_artifact.id, updated_artifact)
-        # If either title or category has been changed, we must move the file
-        if args["category"] or args["title"]:
-            old_category_path = Path(
-                config["PATH_KB_DATA"],
-                old_artifact.category)
-            new_category_path = Path(
-                config["PATH_KB_DATA"],
-                args["category"] or old_artifact.category)
-            fs.create_directory(new_category_path)
-
-            fs.move_file(Path(old_category_path, old_artifact.title), Path(
-                new_category_path, args["title"] or old_artifact.title))
-    # else if a title is specified
-    elif args["title"]:
-        artifact = db.get_uniq_artifact_by_filter(conn, title=args["title"],
-                                                  category=args["category"],
-                                                  author=args["author"],
-                                                  status=args["status"],
-                                                  is_strict=True)
-
-        if artifact:
-            category_path = Path(config["PATH_KB_DATA"], artifact.category)
+    # Content edits append a new revision instead of overwriting
+    if args["edit_content"] or args["body"] is not None:
+        if args["body"] is not None:
+            data = args["body"].replace("\\n", "\n").encode("utf-8")
+            commit_new_content(conn, config, artifact, data)
         else:
-            print(
-                "There is none or more than one artifact with that title, please specify a category")
+            suffix = Path(artifact.title).suffix
+            tmp_path = store.materialize(
+                config["PATH_KB_BLOB"],
+                artifact.current_hash,
+                suffix=suffix)
+            try:
+                shell_cmd = shlex.split(config["EDITOR"]) + [tmp_path]
+                call(shell_cmd)
+                with open(tmp_path, "rb") as art_file:
+                    data = art_file.read()
+            finally:
+                fs.remove_file(tmp_path)
+            commit_new_content(conn, config, artifact, data)
 
-    if args["edit_content"] or args["body"]:
-        if args["title"]:
-            artifact_path = str(Path(category_path, artifact.title))
-            shell_cmd = shlex.split(config["EDITOR"]) + [artifact_path]
-        elif args["id"]:
-            artifact_path = str(Path(config["PATH_KB_DATA"])
-                                / old_artifact.category
-                                / old_artifact.title)
-            shell_cmd = shlex.split(config["EDITOR"]) + [artifact_path]
 
-        if args["body"]:
-            args["body"] = args["body"].replace("\\n", "\n")
-            with open(artifact_path, 'w') as art_file:
-                art_file.write(args["body"])
-        else:
-            call(shell_cmd)
+def commit_new_content(conn, config, artifact, data: bytes) -> None:
+    """Store new content as a blob and append a revision if changed."""
+    blob_hash = store.hash_content(data)
+    if blob_hash == artifact.current_hash:
+        print("Content unchanged, no new revision created")
+        return
+
+    blob_hash = store.add_blob(config["PATH_KB_BLOB"], data)
+    revision = db.add_revision(
+        conn, artifact.uuid, blob_hash, len(data))
+    print("New revision {rev} stored (blob {sha})".format(
+        rev=revision.revision_no, sha=blob_hash[:12]))

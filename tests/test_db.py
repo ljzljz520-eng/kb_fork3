@@ -5,437 +5,249 @@
 # See /LICENSE for licensing information.
 
 """
-To reload modules
-import imp
-imp.reload(kb)
-imp.reload(kb.db)
-imp.reload(kb.filesystem)
+Tests for the schema v2 database layer: stable UUID identity,
+hash-referencing revisions, display-only renames and tombstones.
 """
 
-import attr
-import os
 import sqlite3
+
 import pytest
-from pathlib import Path
-import kb
+
 import kb.db as db
-import kb.filesystem as fs
+import kb.store as store
 from kb.entities.artifact import Artifact
 
 
+CONTENT_V1 = b"version one\n"
+CONTENT_V2 = b"version two\n"
+
+
 @pytest.fixture()
-def db_connect():
-    conn = sqlite3.connect(str(Path("tests","data","mydb.db")))
-    return conn
+def backend(tmp_path):
+    blob_root = str(tmp_path / "blob")
+    db_path = str(tmp_path / "kb.db")
+    db.create_kb_database(db_path, 2)
+    conn = db.create_connection(db_path)
+    conn.commit()
+    return conn, blob_root
+
+
+def _make_artifact(conn, blob_root, title="note", category="default",
+                   content=CONTENT_V1, tags=None, **kwargs):
+    blob_hash = store.add_blob(blob_root, content)
+    artifact = Artifact(
+        uuid=None, title=title, category=category,
+        current_hash=blob_hash, tags=tags,
+        author=kwargs.get("author"), status=kwargs.get("status"),
+        template=kwargs.get("template"))
+    artifact_uuid = db.create_artifact(
+        conn, artifact, blob_hash, len(content))
+    return artifact_uuid, blob_hash
+
 
 def _list_tables(conn):
-    """
-    Return the list of tables currently in the database
-    at the moment kb is based on a single table
-    called "artifacts", but this may change in the future.
-
-    Arguments:
-    conn            -   the sqlite3 Connection object
-
-    Returns:
-    A list of strings representing the list of tables
-    in the kb database
-    """
-    with conn:
-        cur = conn.cursor()
-        sql_query = """SELECT name FROM sqlite_master
-                    WHERE type='table'
-                    ORDER BY name;"""
-        cur.execute(sql_query)
-        rows = cur.fetchall()
-    return rows
-
-
-def test_create_connection():
-    ok_db_path = Path("tests","data",".kb","kb.db")
-    assert db.create_connection(str(ok_db_path)) is not None
-    
-
-def test_create_connection_2():
-    failing_db_path = Path("tests","data","non_existing","kb.db")
-    assert db.create_connection(str(failing_db_path)) is None
-
-
-def test_create_connection_3():
-    ok_db_path = ":memory:"
-    assert db.create_connection(ok_db_path) is not None
-
-
-def test_list_tables_blank():
-    db_path = Path("tests","data","empty.db")
-    conn = db.create_connection(str(db_path))
-    with conn:
-        assert _list_tables(conn) == []
-
-
-def test_list_tables():
-    sql_create_table_query = """CREATE TABLE IF NOT EXISTS testtable1 (
-                                    id integer PRIMARY KEY,
-                                    author text
-                                 );
-                                CREATE TABLE IF NOT EXISTS testtable2 (
-                                    id integer PRIMARY KEY,
-                                    author text
-                                );
-                             """
-
-    db_path = Path("tests","data","two_tables.db")
-
-    conn = db.create_connection(str(db_path))
-    with conn:
-        try:
-            c = conn.cursor()
-            c.executescript(sql_create_table_query)
-        except Exception as e:
-            print(e)
-
-        assert len(_list_tables(conn)) == 2
-
-
-def test_create_table(db_connect):
-    sql_db_create_query = """CREATE TABLE IF NOT EXISTS artifacts (
-                                id integer PRIMARY KEY,
-                                title text NOT NULL,
-                                category text NOT NULL,
-                                path text NOT NULL,
-                                tags text,
-                                status text,
-                                author text,
-                                template text);
-                          """
-
-    db_path = Path("tests","data","mydb.db")
-
-    conn = db.create_connection(str(db_path))
-    with conn:
-        if conn is not None:
-            db.create_table(conn, sql_db_create_query)
-        else:
-            print("Error! cannot create the database connection.")
-
-        assert len(_list_tables(conn)) == 1
-
-
-def test_create_table_2(db_connect):
-    sql_db_create_query = """CREATE TABLE artifacts (
-                                id integer PRIMARY KEY,
-                                title text NOT NULL,
-                                category text NOT NULL,
-                                path text NOT NULL,
-                                tags text,
-                                status text,
-                                author text,
-                                template text);
-                          """
-    db_path = Path("tests","data","mydb2.db")
-
-    conn = db.create_connection(str(db_path))
-    with conn:
-        if conn is not None:
-            db.create_table(conn, sql_db_create_query)
-            db.create_table(conn, sql_db_create_query)
-        else:
-            print("Error! cannot create the database connection.")
-
-        assert len(_list_tables(conn)) == 1
-
-
-def test_create_kb_database_table():
-    db_path = Path("tests","data","mydb3.db")
-    schema_version = 1
-    db.create_kb_database(str(db_path), schema_version)
-
-    conn = db.create_connection(str(db_path))
-    with conn:
-        try:
-            c = conn.cursor()
-        except Exception as e:
-            print(e)
-
-        # Make sure, the database has the correct number of tables
-        kb_tables = _list_tables(conn)
-        assert len(kb_tables) == 2
-        assert kb_tables == [("artifacts",),("tags",)]
-
-
-
-def test_insert_artifact():
-    db_path = Path("tests","data","test_insert.db")
-    schema_version = 1
-    db.create_kb_database(str(db_path), schema_version)
-    conn = db.create_connection(str(db_path))
-    with conn:
-        db.insert_artifact(conn, Artifact(id=None, path="pentest/smb", title="pentest_smb", category="procedure", 
-                tags='pt;smb', status="OK", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="protocol/ftp", title="ftp", category="cheatsheet", 
-                status="Draft", author="elektroniz"))
-
-        kb_tables = _list_tables(conn)
-        assert len(kb_tables) == 2
-        assert kb_tables == [("artifacts",),("tags",)]
-
-        sql = "SELECT * FROM artifacts;"
-        cur = conn.cursor()
-        cur.execute(sql)
-    
-        rows = cur.fetchall()
-        print(rows)
-        assert set(rows) == {(1, 'pentest_smb', 'procedure',
-                            'pentest/smb', 'pt;smb', 'OK', 'gnc', None),
-                            (2, 'ftp', 'cheatsheet', 'protocol/ftp', None,
-                            'Draft', 'elektroniz', None)}
-
-
-
-def test_is_artifact_existing():
-    db_path = Path("tests","data","test_exist.db")
-    schema_version = 1
-    db.create_kb_database(str(db_path), schema_version)
-    conn = db.create_connection(str(db_path))
-    with conn:
-        db.insert_artifact(conn, Artifact(id=None, path="pentest/smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="OK", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="protocol/ftp", title="ftp",
-                category="cheatsheet", status="Draft", author="elektroniz"))
-        
-        assert db.is_artifact_existing(conn,title="pentest_smb",
-                                    category="procedure")
-        assert db.is_artifact_existing(conn,title="ftp",
-                                    category="cheatsheet")
-        assert not db.is_artifact_existing(conn,title="pentest_smb",
-                                        category="nonexist")
-        assert not db.is_artifact_existing(conn,title="nonexist",
-                                        category="procedure")
-        assert not db.is_artifact_existing(conn,title="",
-                                        category="cheatsheet")
-        assert not db.is_artifact_existing(conn,title="", category="")
-
-
-def test_delete_artifact_by_id():
-    db_path = Path("tests","data","test_id.db")
-
-    schema_version = 1
-    db.create_kb_database(str(db_path), schema_version)
-    conn = db.create_connection(str(db_path))
-    with conn:
-        db.insert_artifact(conn, Artifact(id=None, path="pentest/smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="OK", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="protocol/ftp", title="ftp",
-                category="cheatsheet", status="Draft", author="elektroniz"))
-        
-        db.delete_artifact_by_id(conn, 1)
-
-        sql = "SELECT * FROM artifacts;"
-        cur = conn.cursor()
-        cur.execute(sql)
-    
-        rows = cur.fetchall()
-        assert len(rows) == 1
-        assert set(rows) == {(2, 'ftp', 'cheatsheet', 'protocol/ftp', None,
-                            'Draft', 'elektroniz', None)}
-
-        db.delete_artifact_by_id(conn,2)
-
-        sql = "SELECT * FROM artifacts;"
-        cur = conn.cursor()
-        cur.execute(sql)
-    
-        rows = cur.fetchall()
-        assert len(rows) == 0
-    # try:
-    #     os.unlink(db_path)
-    # except FileNotFoundError:
-    #     pass
-
-
-def test_delete_artifact_by_name():
-    db_path = Path("tests","data","test_name.db")
-
-    schema_version = 1
-    db.create_kb_database(str(db_path), schema_version)
-    conn = db.create_connection(str(db_path))
-    with conn:
-        db.insert_artifact(conn, Artifact(id=None, path="pentest/smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="OK", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="protocol/ftp", title="ftp",
-                category="cheatsheet", status="Draft", author="elektroniz"))
-
-        db.delete_artifact_by_name(conn, title="pentest_smb", category="")
-        sql = "SELECT * FROM artifacts;"
-        cur = conn.cursor()
-        cur.execute(sql)
-    
-        rows = cur.fetchall()
-        assert len(rows) == 2
-
-        db.delete_artifact_by_name(conn, title="pentest_smb", category="procedure")
-        sql = "SELECT * FROM artifacts;"
-        cur = conn.cursor()
-        cur.execute(sql)
-    
-        rows = cur.fetchall()
-        assert len(rows) == 1
-        assert set(rows) == {(2, 'ftp', 'cheatsheet', 'protocol/ftp', None,
-                            'Draft', 'elektroniz',None)}
-    # try:
-    #     os.unlink(db_path)
-    # except FileNotFoundError:
-    #     pass
-
-
-def test_get_artifacts_by_tags():
-    db_path = Path("tests","data","kb_art_tags.db")
-    conn = db.create_connection(str(db_path))
-    with conn:
-        schema_version = 1
-        db.create_kb_database(str(db_path), schema_version)
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="ok", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/ftp", title="ftp", category="cheatsheet", 
-                status="draft", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/http", title="http", category="cheatsheet", 
-                status="OK", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/irc", title="irc", category="cheatsheet", 
-                tags="protocol", status="draft", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_ftp", title="pentest_ftp", category="cheatsheet", 
-                tags="pt", status="draft", author="elektroniz"))
-
-        rows = db.get_artifacts_by_tags(conn, tags=["pt"], is_strict=False)
-        assert len(rows) == 2
-
-        rows = db.get_artifacts_by_tags(conn, tags=["p"], is_strict=False)
-        assert len(rows) == 3
-
-        rows = db.get_artifacts_by_tags(conn, tags=["pt"], is_strict=True)
-        assert len(rows) == 2
-
-
-def test_get_artifacts_by_title():
-    db_path = Path("tests","data","kb_filter_title.db")
-    conn = db.create_connection(str(db_path))
-    with conn:
-        schema_version = 1
-        db.create_kb_database(str(db_path), schema_version)
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="ok", author="gnc"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/ftp", title="ftp", category="cheatsheet", 
-                status="draft", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/http", title="http", category="cheatsheet", 
-                status="OK", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="guides/irc", title="irc", category="cheatsheet", 
-                tags="protocol", status="draft", author="elektroniz"))
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_ftp", title="pentest_ftp", category="cheatsheet", 
-                tags="pt", status="draft", author="elektroniz"))
-
-        rows = db.get_artifacts_by_title(conn, query_string="", is_strict=False)
-        assert len(rows) == 5
-        
-        rows = db.get_artifacts_by_title(conn, query_string="", is_strict=True)
-        assert len(rows) == 0
-
-
-def test_get_artifacts_by_category():
-    db_path = Path("tests","data","kb_filter_cat.db")
-
-    conn = db.create_connection(str(db_path))
-    with conn:
-        schema_version = 1
-        db.create_kb_database(str(db_path), schema_version)
-
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_smb", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="ok", author="gnc"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="guides/ftp", title="ftp",
-                category="cheatsheet",
-                status="draft", author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="guides/http", title="http",
-                category="cheatsheet", status="OK", author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="guides/irc", title="irc",
-                        category="cheatsheet", tags="protocol", status="draft",
-                        author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="cheatsheet/pentest_ftp", title="pentest_ftp",
-                        category="cheatsheet", tags="pt", status="draft",
-                        author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="sheet/math", title="math_formulas",
-                        category="sheet", tags="math", status="draft",
-                        author="gnc"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="sheet/math2", title="geometry_formulas",
-                        category="sheet", tags="math", status="draft",
-                        author="gnc"))
-
-        rows = db.get_artifacts_by_category(conn, query_string="", is_strict=False)
-        assert len(rows) == 7
-
-        rows = db.get_artifacts_by_category(conn, query_string="", is_strict=True)
-        assert len(rows) == 0
-
-        rows = db.get_artifacts_by_category(conn, query_string="sheet", is_strict=True)
-        assert len(rows) == 2
-
-
-def test_get_artifacts_by_filter():
-    db_path = Path("tests","data","kb_filter.db")
-    conn = db.create_connection(str(db_path))
-    with conn:
-        schema_version = 1
-        db.create_kb_database(str(db_path), schema_version)
-
-        db.insert_artifact(conn, Artifact(id=None, path="", title="pentest_smb",
-                category="procedure", tags='pt;smb', status="ok", 
-                author="gnc"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="", title="ftp",
-                category="cheatsheet", tags="protocol", status="draft",
-                author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="", title="pentest_ftp",
-                category="procedure", tags="pt;ftp", status="draft",
-                author="elektroniz"))
-
-        db.insert_artifact(conn, Artifact(id=None, path="general/CORS", title="CORS",
-                category="general", tags="web", status="draft",
-                author="elektroniz"))
-
-        rows = db.get_artifacts_by_filter(conn, title="pentest",
-                                        category="cheatsheet",
-                                        tags=["pt"], is_strict=False)
-
-        assert len(rows) == 0
-
-        rows = db.get_artifacts_by_filter(conn, category="procedure",
-                                        tags=["pt"], is_strict=False)
-        
-        assert sorted(list(set(rows)), key=lambda i: i.id) == [Artifact(1,"pentest_smb","procedure","procedure/pentest_smb","pt;smb","ok","gnc", None),
-                            Artifact(3,"pentest_ftp","procedure","procedure/pentest_ftp","pt;ftp","draft", "elektroniz", None)]
-
-
-        rows = db.get_artifacts_by_filter(conn, title="OR")
-        assert set(rows) == {Artifact(4,"CORS","general", "general/CORS", "web", "draft","elektroniz", None)}
-
-
-        rows = db.get_artifacts_by_filter(conn, category="cheatsheet",
-                                        is_strict=False)
-        assert set(rows) == {Artifact(2,"ftp","cheatsheet","cheatsheet/ftp","protocol", "draft", "elektroniz", None)}
-
-
-        rows = db.get_artifacts_by_filter(conn, category="sheet",
-                                        is_strict=False)
-        assert set(rows) == {Artifact(2,"ftp","cheatsheet","cheatsheet/ftp","protocol", "draft", "elektroniz", None)}
-
-        rows = db.get_artifacts_by_filter(conn, category="cheatsheet",
-                                        is_strict=True)
-        assert set(rows) == {Artifact(2,"ftp","cheatsheet","cheatsheet/ftp","protocol", "draft", "elektroniz", None)}
-
-        rows = db.get_artifacts_by_filter(conn, category="sheet",
-                                        is_strict=True)
-        assert len(rows) == 0
+    cur = conn.cursor()
+    cur.execute("""SELECT name FROM sqlite_master
+                   WHERE type='table' ORDER BY name;""")
+    return [row[0] for row in cur.fetchall()]
+
+
+def test_create_kb_database_tables(backend):
+    conn, _ = backend
+    assert _list_tables(conn) == [
+        "artifacts", "blobs", "revisions", "tags",
+        "tombstone_blobs", "tombstones"]
+
+
+def test_create_artifact_identity_and_revision_one(backend):
+    conn, blob_root = backend
+    artifact_uuid, blob_hash = _make_artifact(conn, blob_root)
+
+    artifact = db.get_artifact_by_uuid(conn, artifact_uuid)
+    assert artifact.uuid == artifact_uuid
+    assert artifact.title == "note"
+    assert artifact.state == "alive"
+    assert artifact.current_hash == blob_hash
+
+    revisions = db.get_revisions(conn, artifact_uuid)
+    assert [rev.revision_no for rev in revisions] == [1]
+    assert revisions[0].blob_hash == blob_hash
+    assert revisions[0].parent_id is None
+
+    cur = conn.cursor()
+    cur.execute("SELECT hash FROM blobs")
+    assert cur.fetchone()[0] == blob_hash
+
+
+def test_duplicate_title_category_rejected(backend):
+    conn, blob_root = backend
+    uuid1, _ = _make_artifact(conn, blob_root, title="dup")
+    uuid2, _ = _make_artifact(conn, blob_root, title="dup")
+    assert uuid1 is not None
+    assert uuid2 is None
+
+
+def test_rename_preserves_identity_blob_and_revision(backend):
+    conn, blob_root = backend
+    artifact_uuid, blob_hash = _make_artifact(
+        conn, blob_root, title="old", category="cat-a")
+    original_revision = db.get_latest_revision(conn, artifact_uuid)
+
+    updated = db.update_artifact_properties(
+        conn, artifact_uuid, title="new", category="cat-b")
+
+    assert updated.uuid == artifact_uuid
+    assert updated.category == "cat-b"
+    assert updated.title == "new"
+    assert updated.current_hash == blob_hash
+    assert updated.current_revision == original_revision.id
+    assert db.get_revisions(conn, artifact_uuid) == [original_revision]
+
+
+def test_rename_collision_rejected(backend):
+    conn, blob_root = backend
+    uuid1, _ = _make_artifact(conn, blob_root, title="a", category="c")
+    _make_artifact(conn, blob_root, title="b", category="c")
+    result = db.update_artifact_properties(
+        conn, uuid1, title="b", category="c")
+    assert result is None
+    assert db.get_artifact_by_uuid(conn, uuid1).title == "a"
+
+
+def test_revision_chain_and_restore(backend):
+    conn, blob_root = backend
+    artifact_uuid, hash_v1 = _make_artifact(
+        conn, blob_root, content=CONTENT_V1)
+    hash_v2 = store.add_blob(blob_root, CONTENT_V2)
+    rev2 = db.add_revision(conn, artifact_uuid, hash_v2, len(CONTENT_V2))
+
+    assert rev2.revision_no == 2
+    assert rev2.blob_hash == hash_v2
+    assert rev2.parent_id == 1
+
+    revisions = db.get_revisions(conn, artifact_uuid)
+    assert [r.blob_hash for r in revisions] == [hash_v1, hash_v2]
+
+    # restore r1: appends a new child referencing the old blob
+    rev3 = db.restore_revision(conn, artifact_uuid, 1)
+    assert rev3.revision_no == 3
+    assert rev3.blob_hash == hash_v1
+    assert rev3.parent_id == rev2.id
+    assert db.get_latest_revision(conn, artifact_uuid).blob_hash == hash_v1
+
+    # restoring the current content is a no-op
+    assert db.restore_revision(conn, artifact_uuid, 1) is None
+    # restoring a missing revision fails
+    assert db.restore_revision(conn, artifact_uuid, 99) is None
+
+
+def test_add_revision_same_content_is_callers_responsibility(backend):
+    conn, blob_root = backend
+    artifact_uuid, _ = _make_artifact(conn, blob_root, content=CONTENT_V1)
+    # the store de-duplicates identical bytes to the same hash
+    same_hash = store.add_blob(blob_root, CONTENT_V1)
+    rev = db.add_revision(conn, artifact_uuid, same_hash, len(CONTENT_V1))
+    assert rev is not None
+    assert rev.blob_hash == same_hash
+
+
+def test_tag_filtering(backend):
+    conn, blob_root = backend
+    _make_artifact(conn, blob_root, title="a", tags="pt;smb")
+    _make_artifact(conn, blob_root, title="b", tags="pt")
+    _make_artifact(conn, blob_root, title="c", tags="web")
+
+    rows = db.get_artifacts_by_tags(conn, tags=["pt"], is_strict=True)
+    assert {art.title for art in rows} == {"a", "b"}
+
+    rows = db.get_artifacts_by_filter(
+        conn, tags=["smb"], is_strict=True)
+    assert {art.title for art in rows} == {"a"}
+
+
+def test_tombstone_lifecycle_and_purge(backend):
+    conn, blob_root = backend
+    artifact_uuid, hash_v1 = _make_artifact(
+        conn, blob_root, content=CONTENT_V1)
+    hash_v2 = store.add_blob(blob_root, CONTENT_V2)
+    db.add_revision(conn, artifact_uuid, hash_v2, len(CONTENT_V2))
+
+    assert db.tombstone_artifact(conn, artifact_uuid, retention_days=30)
+    assert db.tombstone_artifact(conn, artifact_uuid, retention_days=30) \
+        is False
+
+    deleted = db.get_artifact_by_uuid(conn, artifact_uuid)
+    assert deleted.state == "deleted"
+    assert db.is_artifact_existing(conn, "note", "default") is False
+
+    tombstone = db.get_tombstone(conn, artifact_uuid)
+    assert tombstone is not None
+
+    # both blobs are pinned by the tombstone
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT blob_hash FROM tombstone_blobs WHERE artifact_uuid = ?",
+        [artifact_uuid])
+    pinned = {row[0] for row in cur.fetchall()}
+    assert pinned == {hash_v1, hash_v2}
+
+    # live filters exclude deleted artifacts
+    assert db.get_artifacts_by_title(conn, "note", is_strict=True) == []
+    deleted_rows = db.get_artifacts_by_title(
+        conn, "note", is_strict=True, state="deleted")
+    assert len(deleted_rows) == 1
+
+    # nothing expires yet
+    assert db.purge_expired_tombstones(conn) == []
+    assert db.get_artifact_by_uuid(conn, artifact_uuid) is not None
+
+    # undelete works while the tombstone is retained
+    restored = db.undelete_artifact(conn, artifact_uuid)
+    assert restored.state == "alive"
+    assert db.get_tombstone(conn, artifact_uuid) is None
+    cur.execute(
+        "SELECT COUNT(*) FROM tombstone_blobs WHERE artifact_uuid = ?",
+        [artifact_uuid])
+    assert cur.fetchone()[0] == 0
+
+
+def test_purge_expired_tombstone(backend):
+    conn, blob_root = backend
+    artifact_uuid, _ = _make_artifact(conn, blob_root)
+
+    # negative retention => already expired
+    assert db.tombstone_artifact(conn, artifact_uuid, retention_days=-1)
+    purged = db.purge_expired_tombstones(conn)
+    assert purged == [artifact_uuid]
+
+    assert db.get_artifact_by_uuid(conn, artifact_uuid) is None
+    assert db.get_revisions(conn, artifact_uuid) == []
+    assert db.get_tombstone(conn, artifact_uuid) is None
+
+
+def test_undelete_unknown_artifact(backend):
+    conn, _ = backend
+    assert db.undelete_artifact(conn, "missing") is None
+
+
+def test_schema_management(backend, tmp_path):
+    conn, _ = backend
+    assert db.get_schema_version(conn) == 2
+    assert db.is_schema_updated_to_version(conn, 2)
+    assert not db.is_schema_updated_to_version(conn, 1)
+
+
+def test_v0_to_v1_migration(tmp_path):
+    db_path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""CREATE TABLE artifacts (
+        id integer PRIMARY KEY, title text NOT NULL,
+        category text NOT NULL, path text NOT NULL, tags text,
+        status text, author text);
+    """)
+    conn.commit()
+    db.migrate_v0_to_v1(conn)
+    assert db.get_schema_version(conn) == 1
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(artifacts)")
+    assert "template" in [row[1] for row in cur.fetchall()]

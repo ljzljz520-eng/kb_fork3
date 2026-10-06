@@ -31,6 +31,8 @@ def init(config):
                                             (~/.kb/kb.db by default)
                 PATH_KB_DATA            - the path to kb data
                                             (~/.kb/data/ by default)
+                PATH_KB_BLOB            - the path to the blob store
+                                            (~/.kb/blob/ by default)
                 PATH_KB_DEFAULT_TEMPLATE - the path to kb markers
                                             (~/.kb/templates/default by default)
     """
@@ -60,6 +62,7 @@ def create_kb_files(config):
     kb_path = config["PATH_KB"]
     db_path = config["PATH_KB_DB"]
     data_path = config["PATH_KB_DATA"]
+    blob_path = config["PATH_KB_BLOB"]
     initial_categs = config["INITIAL_CATEGORIES"]
     templates_path = config["PATH_KB_TEMPLATES"]
     schema_version = config["DB_SCHEMA_VERSION"]
@@ -72,15 +75,25 @@ def create_kb_files(config):
     if not os.path.exists(db_path):
         db.create_kb_database(db_path, schema_version)
 
-    # Check schema version
+    # Check schema version and run pending migrations
     conn = db.create_connection(db_path)
     current_schema_version = db.get_schema_version(conn)
 
     if current_schema_version == 0:
         db.migrate_v0_to_v1(conn)
+        current_schema_version = 1
+    if current_schema_version == 1:
+        # Content-addressed blobs must exist before migrating, as
+        # legacy file contents are imported into the blob store
+        fs.create_directory(blob_path)
+        db.migrate_v1_to_v2(conn, config)
 
-    # Create "data" directory
+    # Create "data" directory (legacy display tree, kept for
+    # compatibility; content actually lives in the blob store)
     fs.create_directory(data_path)
+
+    # Create the content-addressed blob store directory
+    fs.create_directory(blob_path)
 
     # Create "templates" directory
     fs.create_directory(templates_path)
@@ -117,9 +130,10 @@ def is_initialized(config) -> bool:
     kb_path = config["PATH_KB"]
     db_path = config["PATH_KB_DB"]
     data_path = config["PATH_KB_DATA"]
+    blob_path = config["PATH_KB_BLOB"]
     templates_path = config["PATH_KB_TEMPLATES"]
 
-    for path in [kb_path, db_path, data_path, templates_path]:
+    for path in [kb_path, db_path, data_path, blob_path, templates_path]:
         if not os.path.exists(path):
             return False
 

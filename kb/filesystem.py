@@ -182,17 +182,21 @@ def move_file(source: str, dest: str) -> None:
     shutil.move(source, dest)
 
 
-def get_temp_filepath() -> str:
+def get_temp_filepath(suffix: str = "") -> str:
     """
     Generates a temporary file path.
 
+    Arguments:
+    suffix      - an optional suffix (extension) to append to the
+                  temporary file name
+
     Returns:
-    A boolean, True if the file is of type text.
+    A string representing a path to a file that does not exist yet.
     """
     tmpfilename = None
     while tmpfilename is None:
         random_tmp_path = str(Path(tempfile.gettempdir(),
-                                   os.urandom(24).hex()))
+                                   os.urandom(24).hex() + suffix))
         if not os.path.isfile(random_tmp_path):
             tmpfilename = random_tmp_path
     return tmpfilename

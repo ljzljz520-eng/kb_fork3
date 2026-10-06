@@ -1,11 +1,16 @@
 # -*- encoding: utf-8 -*-
-# kb v0.1.8
+# kb v0.2.0
 # A knowledge base organizer
 # Copyright © 2020, gnc.
 # See /LICENSE for licensing information.
 
 """
 kb edit command module
+
+Editing no longer overwrites content in place: the current blob is
+materialized in a temporary file, the editor runs on it and, when
+the content changes, a brand new revision referencing the new blob
+is appended to the artifact's version chain.
 
 :Copyright: © 2020, gnc.
 :License: GPLv3 (see /LICENSE).
@@ -14,100 +19,60 @@ kb edit command module
 import shlex
 from pathlib import Path
 from subprocess import call
-from typing import Dict
+from typing import Dict, Optional
+
 import kb.db as db
 import kb.initializer as initializer
 import kb.history as history
+import kb.filesystem as fs
+import kb.store as store
 
 
 def edit(args: Dict[str, str], config: Dict[str, str]):
     """
-    Edit the content of an artifact.
-
-    Arguments:
-    args:           - a dictionary containing the following fields:
-                      id -> the IDs (the one you see with kb list)
-                        associated to the artifact we want to edit
-                      title -> the title assigned to the artifact(s)
-                      category -> the category assigned to the artifact(s)
-    config:         - a configuration dictionary containing at least
-                      the following keys:
-                      PATH_KB_DB        - the database path of KB
-                      PATH_KB_DATA      - the data directory of KB
-                      PATH_KB_HIST      - the history menu path of KB
-                      EDITOR            - the editor program to call
+    Edit the content of an artifact, appending a new revision if the
+    content changed.
     """
     initializer.init(config)
 
-    # if an ID is specified, load artifact with that ID
-    if args["id"]:
-        edit_by_id(args["id"], config)
-
-    # else if a title is specified
-    elif args["title"]:
-        edit_by_name(args["title"], args["category"], config)
-
-    # else try to guess
-    elif args["nameid"]:
-        if args["nameid"].isdigit():
-            edit_by_id(args["nameid"], config)
-        else:
-            edit_by_name(args["nameid"], args["category"], config)
-
-
-def edit_by_id(id: int, config: Dict[str, str]):
-    """
-    Edit the content of an artifact by id.
-
-    Arguments:
-    id:             - the ID (the one you see with kb list)
-                      associated to the artifact to edit
-    config:         - a configuration dictionary containing at least
-                      the following keys:
-                      PATH_KB_DB        - the database path of KB
-                      PATH_KB_DATA      - the data directory of KB
-                      PATH_KB_HIST      - the history menu path of KB
-                      EDITOR            - the editor program to call
-    """
     conn = db.create_connection(config["PATH_KB_DB"])
-    artifact = history.get_artifact(
-        conn, config["PATH_KB_HIST"], id)
+    artifact = history.resolve_artifact(conn, args, config, state="alive")
+    if not artifact:
+        print("Error: no valid live artifact matched the selector")
+        return
 
-    category_path = Path(config["PATH_KB_DATA"], artifact.category)
-
-    shell_cmd = shlex.split(config["EDITOR"]) + \
-        [str(Path(category_path, artifact.title))]
-    call(shell_cmd)
+    edit_artifact(conn, artifact, config)
 
 
-def edit_by_name(title: str, category: str, config: Dict[str, str]):
+def edit_artifact(conn, artifact, config: Dict[str, str]) -> Optional[int]:
     """
-    Edit the content of an artifact by name, that is title/category
+    Edit the content of an already-resolved artifact.
 
-    Arguments:
-    title:          - the title assigned to the artifact(s)
-    category:       - the category assigned to the artifact(s)
-    config:         - a configuration dictionary containing at least
-                      the following keys:
-                      PATH_KB_DB        - the database path of KB
-                      PATH_KB_DATA      - the data directory of KB
-                      PATH_KB_HIST      - the history menu path of KB
-                      EDITOR            - the editor program to call
+    Returns:
+    The new revision number if a revision was appended, None
+    otherwise.
     """
-    conn = db.create_connection(config["PATH_KB_DB"])
-    artifacts = db.get_artifacts_by_filter(conn, title=title,
-                                           category=category,
-                                           is_strict=True)
-
-    if len(artifacts) == 1:
-        artifact = artifacts.pop()
-        category_path = Path(config["PATH_KB_DATA"], artifact.category)
-        shell_cmd = shlex.split(
-            config["EDITOR"]) + [str(Path(category_path, artifact.title))]
+    suffix = Path(artifact.title).suffix
+    tmp_path = store.materialize(
+        config["PATH_KB_BLOB"], artifact.current_hash, suffix=suffix)
+    try:
+        shell_cmd = shlex.split(config["EDITOR"]) + [tmp_path]
         call(shell_cmd)
-    elif len(artifacts) > 1:
-        print(
-            "There is more than one artifact with that title, please specify a category")
-    else:
-        print(
-            "There is no artifact with that name, please specify a correct artifact name")
+
+        with open(tmp_path, "rb") as handle:
+            data = handle.read()
+    finally:
+        fs.remove_file(tmp_path)
+
+    blob_hash = store.hash_content(data)
+    if blob_hash == artifact.current_hash:
+        print("Content unchanged, no new revision created")
+        return None
+
+    blob_hash = store.add_blob(config["PATH_KB_BLOB"], data)
+    revision = db.add_revision(
+        conn, artifact.uuid, blob_hash, len(data))
+    print("New revision {rev} stored for {path} (blob {sha})".format(
+        rev=revision.revision_no, path=artifact.path,
+        sha=blob_hash[:12]))
+    return revision.revision_no

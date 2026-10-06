@@ -44,19 +44,41 @@ def search(args: Dict[str, str], config: Dict[str, str]):
         tags_list = args["tags"].split(';')
 
     conn = db.create_connection(config["PATH_KB_DB"])
-    rows = db.get_artifacts_by_filter(
-        conn,
-        title=args["query"],
-        category=args["category"],
-        tags=tags_list,
-        status=args["status"],
-        author=args["author"])
+    state = "deleted" if args.get("deleted") else "alive"
 
-    # rows.sort(key=lambda x: x[1])
-    artifacts = sorted(rows, key=lambda x: x.title)
+    if state == "deleted":
+        deleted = db.get_deleted_artifacts(conn)
+        if args["query"]:
+            deleted = [entry for entry in deleted
+                       if args["query"].lower() in entry[0].title.lower()]
+        if args["category"]:
+            deleted = [entry for entry in deleted
+                       if args["category"].lower()
+                       in entry[0].category.lower()]
+        artifacts = sorted([entry[0] for entry in deleted],
+                           key=lambda x: x.title)
+        purge_by_uuid = {entry[0].uuid: entry[2] for entry in deleted}
+    else:
+        rows = db.get_artifacts_by_filter(
+            conn,
+            title=args["query"],
+            category=args["category"],
+            tags=tags_list,
+            status=args["status"],
+            author=args["author"],
+            state="alive")
+        artifacts = sorted(rows, key=lambda x: x.title)
+        purge_by_uuid = {}
 
     # Write to history file
     history.write(config["PATH_KB_HIST"], artifacts)
+
+    if state == "deleted":
+        print("Deleted artifacts (use 'kb undelete' to restore):")
+        for artifact in artifacts:
+            print("  {path} (recoverable until {purge})".format(
+                path=artifact.path, purge=purge_by_uuid[artifact.uuid]))
+        return
 
     # Is full_identifier mode enabled?
     if args["full_identifier"]:

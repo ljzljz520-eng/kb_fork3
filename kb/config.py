@@ -26,14 +26,20 @@ DEFAULT_CONFIG = {
     "PATH_KB_DB": str(Path(BASE_PATH, "kb.db")),
     "PATH_KB_HIST": str(Path(BASE_PATH, "recent.hist")),
     "PATH_KB_DATA": str(Path(BASE_PATH, "data")),
+    # Hash-addressed content store: blobs are named after the
+    # SHA-256 hash of their content and sharded in 256 buckets
+    "PATH_KB_BLOB": str(Path(BASE_PATH, "blob")),
     "PATH_KB_GIT": str(Path(BASE_PATH, ".git")),
     # for future use
     "PATH_KB_CONFIG": str(Path(BASE_PATH, "kb.conf.py")),
     "PATH_KB_TEMPLATES": str(Path(BASE_PATH, "templates")),
     "PATH_KB_DEFAULT_TEMPLATE": str(Path(BASE_PATH, "templates", "default")),
-    "DB_SCHEMA_VERSION": 1,
+    "DB_SCHEMA_VERSION": 2,
     "EDITOR": os.environ.get("EDITOR", "vim"),
-    "INITIAL_CATEGORIES": ["default", ]
+    "INITIAL_CATEGORIES": ["default", ],
+    # Number of days a deleted artifact is kept as a tombstone
+    # (and therefore restorable) before garbage collection
+    "TOMBSTONE_RETENTION_DAYS": 30,
 }
 
 

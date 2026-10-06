@@ -21,6 +21,11 @@ from kb.commands.search import search
 from kb.commands.edit import edit
 from kb.commands.update import update
 from kb.commands.delete import delete
+from kb.commands.undelete import undelete
+from kb.commands.history import history
+from kb.commands.diff import diff
+from kb.commands.restore import restore
+from kb.commands.gc import gc
 from kb.commands.template import template
 from kb.commands.view import view
 from kb.commands.grep import grep
@@ -35,7 +40,12 @@ from kb.config import DEFAULT_CONFIG
 COMMANDS = {
     'add': add,
     'delete': delete,
+    'undelete': undelete,
     'edit': edit,
+    'history': history,
+    'diff': diff,
+    'restore': restore,
+    'gc': gc,
     'update': update,
     'list': search,
     'view': view,

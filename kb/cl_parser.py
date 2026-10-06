@@ -58,7 +58,17 @@ def parse_args(args: Sequence[str]) -> argparse.Namespace:
     update_parser = subparsers.add_parser(
         'update', help='Update artifact properties')
     delete_parser = subparsers.add_parser(
-        'delete', help='Delete artifacts')
+        'delete', help='Delete artifacts (soft delete with retention)')
+    undelete_parser = subparsers.add_parser(
+        'undelete', help='Restore a deleted artifact before its retention expires')
+    history_parser = subparsers.add_parser(
+        'history', help='Show the revision history of an artifact')
+    diff_parser = subparsers.add_parser(
+        'diff', help='Show the difference between two revisions')
+    restore_parser = subparsers.add_parser(
+        'restore', help='Restore a retained revision of an artifact')
+    gc_parser = subparsers.add_parser(
+        'gc', help='Purge expired tombstones and unreferenced blobs')
     template_parser = subparsers.add_parser(
         'template', help='Manage templates for artifacts')
     import_parser = subparsers.add_parser(
@@ -207,6 +217,14 @@ def parse_args(args: Sequence[str]) -> argparse.Namespace:
         help="Print results in full-identifier mode",
         action='store_true',
         dest='full_identifier',
+        default=False,
+    )
+    list_parser.add_argument(
+        "--deleted",
+        help="List deleted (tombstoned) artifacts still within "
+             "their retention period",
+        action='store_true',
+        dest='deleted',
         default=False,
     )
     list_parser.add_argument(
@@ -392,6 +410,87 @@ def parse_args(args: Sequence[str]) -> argparse.Namespace:
         "-f", "--force",
         help="Force removal without asking for confirmation prompt",
         action='store_true',
+        default=False,
+    )
+
+    # Common selectors used by the revision-aware commands
+    def _add_artifact_selectors(target_parser, id_nargs=None):
+        target_parser.add_argument(
+            "nameid",
+            help="Title or ID of the artifact",
+            type=str,
+            nargs="?",
+        )
+        target_parser.add_argument(
+            "-i", "--id",
+            help="ID of the artifact (the one shown by kb list)",
+            type=str,
+            nargs=id_nargs,
+        )
+        target_parser.add_argument(
+            "-t", "--title",
+            help="Title of the artifact",
+            default=None,
+            type=str,
+        )
+        target_parser.add_argument(
+            "-c", "--category",
+            help="Category of the artifact",
+            default=None,
+            type=str,
+        )
+
+    # undelete parser
+    _add_artifact_selectors(undelete_parser)
+
+    # history parser
+    _add_artifact_selectors(history_parser)
+    history_parser.add_argument(
+        "--verify",
+        help="Recompute and verify the hash of every retained blob",
+        action='store_true',
+        dest='verify',
+        default=False,
+    )
+    history_parser.add_argument(
+        "--full-hash",
+        help="Show the full blob hash instead of a short prefix",
+        action='store_true',
+        dest='full_hash',
+        default=False,
+    )
+
+    # diff parser
+    _add_artifact_selectors(diff_parser)
+    diff_parser.add_argument(
+        "-r", "--revision",
+        help="Revision number to diff (defaults to the current revision)",
+        type=int,
+        default=None,
+    )
+    diff_parser.add_argument(
+        "-R", "--against",
+        help="Revision number to diff against (defaults to the parent "
+             "revision)",
+        type=int,
+        default=None,
+    )
+
+    # restore parser
+    _add_artifact_selectors(restore_parser)
+    restore_parser.add_argument(
+        "-r", "--revision",
+        help="Revision number to restore",
+        type=int,
+        required=True,
+    )
+
+    # gc parser
+    gc_parser.add_argument(
+        "--dry-run",
+        help="Only report what would be purged/removed",
+        action='store_true',
+        dest='dry_run',
         default=False,
     )
 
